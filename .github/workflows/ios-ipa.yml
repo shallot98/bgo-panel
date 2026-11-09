@@ -104,15 +104,15 @@ jobs:
           set -euo pipefail
           NOTES="bgo面板 iOS App 最新构建（纯 Swift 原生客户端）。
 
-安装方式：
+          安装方式：
 
-- TrollStore（巨魔）：手机打开 BgoPanel-unsigned.ipa 直接安装
-- 越狱机：dpkg -i BgoPanel_iphoneos-arm64.deb（安装到 /var/jb/Applications，自动 uicache）
-- 自签侧载：AltStore / Sideloadly 导入 IPA 用 Apple ID 重签
+          - TrollStore（巨魔）：手机打开 BgoPanel-unsigned.ipa 直接安装
+          - 越狱机：dpkg -i BgoPanel_iphoneos-arm64.deb（安装到 /var/jb/Applications，自动 uicache）
+          - 自签侧载：AltStore / Sideloadly 导入 IPA 用 Apple ID 重签
 
-首次打开在登录页填入服务器地址（默认 https://bgp.cenai.de）与 Web 设置页生成的 API Token 即可免密连接。
+          首次打开在登录页填入服务器地址（默认 https://bgp.cenai.de）与 Web 设置页生成的 API Token 即可免密连接。
 
-版本 $VERSION · 构建 ${GITHUB_SHA::7} · 每次 push 到 main 会自动更新这里的 IPA 与 deb。"
+          版本 $VERSION · 构建 ${GITHUB_SHA::7} · 每次 push 到 main 会自动更新这里的 IPA 与 deb。"
           if gh release view ios-latest >/dev/null 2>&1; then
             gh release edit ios-latest --title "bgo面板 iOS App（最新构建）" --notes "$NOTES" --latest
           else
