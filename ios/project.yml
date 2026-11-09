@@ -1,0 +1,36 @@
+# XcodeGen 工程定义：CI 里 xcodegen generate 出 BgoPanel.xcodeproj，仓库不落 Xcode 二进制工程文件。
+name: BgoPanel
+options:
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  BgoPanel:
+    type: application
+    platform: iOS
+    sources:
+      - path: BgoPanel
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.cenai.bgopanel
+        PRODUCT_NAME: BgoPanel
+        INFOPLIST_FILE: BgoPanel/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+schemes:
+  BgoPanel:
+    build:
+      targets:
+        BgoPanel: all
+    run:
+      config: Release
+    archive:
+      config: Release

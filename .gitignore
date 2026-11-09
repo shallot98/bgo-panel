@@ -1,0 +1,14 @@
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+build/
+DerivedData/
+dist/
+Payload/
+tmp/
+debroot/
+__pycache__/
+*.pyc
+panel.db
+panel.json
+*.log
