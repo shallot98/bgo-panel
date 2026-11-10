@@ -22,6 +22,33 @@ enum Theme {
     static let textPrimary = UIColor(white: 0.95, alpha: 1.0)
     static let textSecondary = UIColor(white: 0.60, alpha: 1.0)
     static let textMuted = UIColor(white: 0.38, alpha: 1.0)
+
+    /// 获取主播名称首字（大写/汉字）作为头像文字
+    static func initial(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "播" }
+        return String(first).uppercased()
+    }
+
+    /// 根据主播名称哈希生成稳定的专属渐变底色
+    static func avatarColor(for name: String) -> UIColor {
+        let palette: [UIColor] = [
+            UIColor(red: 0.20, green: 0.50, blue: 0.90, alpha: 1.0), // 蓝
+            UIColor(red: 0.15, green: 0.68, blue: 0.38, alpha: 1.0), // 绿
+            UIColor(red: 0.58, green: 0.32, blue: 0.88, alpha: 1.0), // 紫
+            UIColor(red: 0.92, green: 0.40, blue: 0.20, alpha: 1.0), // 橙
+            UIColor(red: 0.85, green: 0.25, blue: 0.45, alpha: 1.0), // 玫红
+            UIColor(red: 0.10, green: 0.65, blue: 0.70, alpha: 1.0), // 青
+            UIColor(red: 0.80, green: 0.55, blue: 0.15, alpha: 1.0), // 琥珀
+            UIColor(red: 0.35, green: 0.45, blue: 0.85, alpha: 1.0), // 靛青
+        ]
+        var hash: Int = 0
+        for u in name.unicodeScalars {
+            hash = (hash &* 31) &+ Int(u.value)
+        }
+        let index = abs(hash) % palette.count
+        return palette[index]
+    }
 }
 
 /// 触觉震动管理器

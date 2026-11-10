@@ -5,6 +5,8 @@ final class RoomCell: UITableViewCell {
 
     var onToggleListening: (() -> Void)?
 
+    private let avatarContainer = UIView()
+    private let avatarLabel = UILabel()
     private let avatarImageView = UIImageView()
     private let nameLabel = UILabel()
     private let hostBadgeLabel = UILabel()
@@ -26,12 +28,23 @@ final class RoomCell: UITableViewCell {
     private func setupUI() {
         contentView.backgroundColor = Theme.cardBackground
 
-        avatarImageView.layer.cornerRadius = 22
-        avatarImageView.layer.masksToBounds = true
-        avatarImageView.backgroundColor = Theme.cardSelected
+        avatarContainer.layer.cornerRadius = 22
+        avatarContainer.layer.masksToBounds = true
+        avatarContainer.backgroundColor = Theme.cardSelected
+        avatarContainer.layer.borderWidth = 1.5
+        avatarContainer.layer.borderColor = Theme.border.cgColor
+
+        avatarLabel.font = .systemFont(ofSize: 18, weight: .bold)
+        avatarLabel.textColor = .white
+        avatarLabel.textAlignment = .center
+        avatarLabel.translatesAutoresizingMaskIntoConstraints = false
+        avatarContainer.addSubview(avatarLabel)
+
         avatarImageView.contentMode = .scaleAspectFill
-        avatarImageView.layer.borderWidth = 1.5
-        avatarImageView.layer.borderColor = Theme.border.cgColor
+        avatarImageView.clipsToBounds = true
+        avatarImageView.translatesAutoresizingMaskIntoConstraints = false
+        avatarImageView.isHidden = true
+        avatarContainer.addSubview(avatarImageView)
 
         nameLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         nameLabel.textColor = Theme.textPrimary
@@ -82,23 +95,31 @@ final class RoomCell: UITableViewCell {
         middleCol.axis = .vertical
         middleCol.spacing = 3
 
-        [avatarImageView, middleCol, toggleButton].forEach {
+        [avatarContainer, middleCol, toggleButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            avatarImageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-            avatarImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            avatarImageView.widthAnchor.constraint(equalToConstant: 44),
-            avatarImageView.heightAnchor.constraint(equalToConstant: 44),
+            avatarLabel.centerXAnchor.constraint(equalTo: avatarContainer.centerXAnchor),
+            avatarLabel.centerYAnchor.constraint(equalTo: avatarContainer.centerYAnchor),
+
+            avatarImageView.topAnchor.constraint(equalTo: avatarContainer.topAnchor),
+            avatarImageView.bottomAnchor.constraint(equalTo: avatarContainer.bottomAnchor),
+            avatarImageView.leadingAnchor.constraint(equalTo: avatarContainer.leadingAnchor),
+            avatarImageView.trailingAnchor.constraint(equalTo: avatarContainer.trailingAnchor),
+
+            avatarContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            avatarContainer.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            avatarContainer.widthAnchor.constraint(equalToConstant: 44),
+            avatarContainer.heightAnchor.constraint(equalToConstant: 44),
 
             toggleButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
             toggleButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             toggleButton.widthAnchor.constraint(equalToConstant: 32),
             toggleButton.heightAnchor.constraint(equalToConstant: 32),
 
-            middleCol.leadingAnchor.constraint(equalTo: avatarImageView.trailingAnchor, constant: 12),
+            middleCol.leadingAnchor.constraint(equalTo: avatarContainer.trailingAnchor, constant: 12),
             middleCol.trailingAnchor.constraint(equalTo: toggleButton.leadingAnchor, constant: -10),
             middleCol.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
             middleCol.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
@@ -121,18 +142,25 @@ final class RoomCell: UITableViewCell {
         statusLabel.text = room.statusText
         statusLabel.textColor = room.statusColor
 
-        // 录制中头像加红圈
+        // 默认显示主播名字首字与专属彩色背景（优雅降级）
+        avatarLabel.text = Theme.initial(room.streamerName)
+        avatarContainer.backgroundColor = Theme.avatarColor(for: room.streamerName)
+        avatarLabel.isHidden = false
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
+
+        // 录制中头像加红圈，监听中加绿圈
         if room.recording {
-            avatarImageView.layer.borderColor = Theme.recordingRed.cgColor
-            avatarImageView.layer.borderWidth = 2.0
+            avatarContainer.layer.borderColor = Theme.recordingRed.cgColor
+            avatarContainer.layer.borderWidth = 2.0
             toggleButton.tintColor = Theme.recordingRed
         } else if room.listening {
-            avatarImageView.layer.borderColor = Theme.listeningGreen.cgColor
-            avatarImageView.layer.borderWidth = 1.5
+            avatarContainer.layer.borderColor = Theme.listeningGreen.cgColor
+            avatarContainer.layer.borderWidth = 1.5
             toggleButton.tintColor = Theme.listeningGreen
         } else {
-            avatarImageView.layer.borderColor = Theme.border.cgColor
-            avatarImageView.layer.borderWidth = 1.0
+            avatarContainer.layer.borderColor = Theme.border.cgColor
+            avatarContainer.layer.borderWidth = 1.0
             toggleButton.tintColor = Theme.textMuted
         }
 
@@ -148,13 +176,13 @@ final class RoomCell: UITableViewCell {
             scoreBadgeLabel.isHidden = true
         }
 
-        // 头像加载
-        avatarImageView.image = UIImage(systemName: "person.circle.fill")
-        avatarImageView.tintColor = Theme.textMuted
+        // 若有真实图片头像则异步加载并覆盖
         if let avatarUrl = room.avatar, !avatarUrl.isEmpty {
             ImageLoader.shared.load(from: avatarUrl) { [weak self] img in
                 if let img = img {
                     self?.avatarImageView.image = img
+                    self?.avatarImageView.isHidden = false
+                    self?.avatarLabel.isHidden = true
                 }
             }
         }
