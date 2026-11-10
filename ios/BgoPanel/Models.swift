@@ -54,10 +54,14 @@ struct Room: Codable, Identifiable {
         case recording
         case status
         case title
+        case roomName = "room_name"
         case streamerName = "streamer_name"
+        case hostName = "host_name"
         case name
+        case nickName = "nick_name"
         case avatar
         case url
+        case liveUrl = "live_url"
         case mode
         case managed
         case failover
@@ -69,19 +73,36 @@ struct Room: Codable, Identifiable {
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? "boh"
         listening = try container.decodeIfPresent(Bool.self, forKey: .listening) ?? false
         recording = try container.decodeIfPresent(Bool.self, forKey: .recording) ?? false
-        status = try container.decodeIfPresent(Int.self, forKey: .status) ?? 0
-        title = try container.decodeIfPresent(String.self, forKey: .title)
 
-        if let sName = try container.decodeIfPresent(String.self, forKey: .streamerName), !sName.isEmpty {
+        // 兼容 Int (1/0) 与 Bool (true/false) 与 String
+        if let sInt = try? container.decodeIfPresent(Int.self, forKey: .status) {
+            status = sInt
+        } else if let sBool = try? container.decodeIfPresent(Bool.self, forKey: .status) {
+            status = sBool ? 1 : 0
+        } else if let sStr = try? container.decodeIfPresent(String.self, forKey: .status) {
+            status = (sStr == "true" || sStr == "1") ? 1 : 0
+        } else {
+            status = 0
+        }
+
+        title = (try? container.decodeIfPresent(String.self, forKey: .title))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .roomName))
+
+        if let sName = try? container.decodeIfPresent(String.self, forKey: .streamerName), !sName.isEmpty {
             streamerName = sName
-        } else if let altName = try container.decodeIfPresent(String.self, forKey: .name), !altName.isEmpty {
+        } else if let hName = try? container.decodeIfPresent(String.self, forKey: .hostName), !hName.isEmpty {
+            streamerName = hName
+        } else if let altName = try? container.decodeIfPresent(String.self, forKey: .name), !altName.isEmpty {
             streamerName = altName
+        } else if let nName = try? container.decodeIfPresent(String.self, forKey: .nickName), !nName.isEmpty {
+            streamerName = nName
         } else {
             streamerName = "未知主播"
         }
 
-        avatar = try container.decodeIfPresent(String.self, forKey: .avatar)
-        url = try container.decodeIfPresent(String.self, forKey: .url)
+        avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
+        url = (try? container.decodeIfPresent(String.self, forKey: .url))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .liveUrl))
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "permanent"
         managed = try container.decodeIfPresent(ManagedInfo.self, forKey: .managed)
         failover = try container.decodeIfPresent(FailoverInfo.self, forKey: .failover)
@@ -154,6 +175,11 @@ struct Room: Codable, Identifiable {
         default: return Theme.permanentBlue
         }
     }
+}
+
+struct RoomsResponse: Codable {
+    let rooms: [Room]
+    let errors: [String: String]?
 }
 
 // MARK: - 总览与统计 (Overview)

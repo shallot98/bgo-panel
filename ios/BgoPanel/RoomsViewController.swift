@@ -135,8 +135,11 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
                     self.isRefreshing = false
                     if let apiErr = error as? APIError, case .unauthorized = apiErr {
                         self.presentLogin()
-                    } else if !silent {
+                    } else {
                         AppLog.error("加载房间失败: \(error.localizedDescription)")
+                        if self.allRooms.isEmpty {
+                            self.subtitleLabel.text = "加载失败: \(error.localizedDescription)"
+                        }
                     }
                 }
             }

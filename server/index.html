@@ -842,7 +842,7 @@ async function loadSessions() {
 // ---------------- 健康
 const CAT_L = { room_fast: ["快速 500", "t-bad"], room_deadline: ["超时", "t-warn"], stream_fail: ["取流失败", "t-bad"], other_error: ["其他", "t-2"] };
 async function loadHealth() {
-  const d = await api("/api/health"); const ls = d.logstats || {}, t = ls.today || {}, ck = d.cookie || {}, ex = d.exits;
+  const d = await api("/api/health"); const ls = d.logstats || {}, t = ls.today || {}, ck = d.cookie || {}, ex = d.exits, pm = d.proxy_mode, ch = d.channels || {};
   const tops = ls.top_rooms || [];
   $("#page").innerHTML = `<div class="ptitle"><h1>健康</h1><div class="sub"><span class="t-mute">${ls.updated ? "日志统计更新于 " + ago(ls.updated) : "统计中"}</span></div></div>
     <div class="grid g4">
@@ -857,7 +857,19 @@ async function loadHealth() {
         <dt>失败记录</dt><dd>${Object.keys(ck.failed || {}).length ? `<span class="t-warn">${Object.keys(ck.failed).length} 个</span>` : '<span class="t-ok">无</span>'}</dd>
         <dt>策略</dt><dd>${ck.policy ? `${esc(ck.policy.rotate_strategy)} · 每 ${fmtDur(ck.policy.max_use_seconds)} 轮换 · 阈值 ${esc(ck.policy.error_threshold)}` : esc(ck.policy_error || "—")}</dd>
         ${ck.error ? `<dt>错误</dt><dd class="t-bad">${esc(ck.error)}</dd>` : ""}</dl></div>
-      <div class="card"><h3>代理出口体检</h3>${ex ? `<dl class="kv"><dt>日志</dt><dd class="mono">${esc(ex.file)}</dd><dt>最后一轮</dt><dd>${esc(ex.round || "—")}</dd><dt>汇总</dt><dd>${esc(ex.summary || "—")}</dd><dt>更新</dt><dd class="${Date.now() / 1000 - ex.mtime > 86400 ? "t-warn" : ""}">${ago(ex.mtime)}${Date.now() / 1000 - ex.mtime > 86400 ? "（体检循环已停，数据过期）" : ""}</dd></dl>` : '<div class="empty">没有体检日志</div>'}</div>
+      <div class="card"><h3>风控与出口<span class="r">${pm ? (pm.mode === "direct" ? "直连" : pm.mode === "proxy" ? "住宅代理" : "未知") : "—"}</span></h3>
+        ${pm ? `<div class="${pm.mode === "direct" ? "t-warn" : pm.mode === "proxy" ? "t-ok" : "t-mute"}" style="font-size:13px;margin-bottom:10px">${esc(pm.detail || pm.mode)}${pm.wrapper_mtime ? " · 切换于 " + ago(pm.wrapper_mtime) : ""}</div>` : ""}
+        ${ch.error ? `<div class="t-bad" style="font-size:12px;margin-bottom:8px">统计失败：${esc(ch.error)}</div>` : ""}
+        <dl class="kv" style="grid-template-columns:132px 1fr">
+          <dt>今日 444（风控）${ch.approx ? '<span class="t-mute">≈</span>' : ""}</dt><dd class="${(ch.today || {}).http444 ? "t-bad" : "t-ok"}">${fmtN((ch.today || {}).http444 || 0)}</dd>
+          <dt>今日通道熔断${ch.approx ? '<span class="t-mute">≈</span>' : ""}</dt><dd class="${(ch.today || {}).circuit ? "t-warn" : "t-ok"}">${fmtN((ch.today || {}).circuit || 0)}</dd>
+          <dt>今日通道失败${ch.approx ? '<span class="t-mute">≈</span>' : ""}</dt><dd>${fmtN((ch.today || {}).channel_fail || 0)}</dd>
+          <dt>近 5 分钟 444</dt><dd class="${(ch.last5m || {}).http444 ? "t-bad" : "t-ok"}">${fmtN((ch.last5m || {}).http444 || 0)}</dd>
+          <dt>近 5 分钟熔断</dt><dd class="${(ch.last5m || {}).circuit ? "t-warn" : "t-ok"}">${fmtN((ch.last5m || {}).circuit || 0)}</dd>
+        </dl>
+        ${ch.approx ? '<div class="t-mute" style="font-size:11px;margin-top:6px">≈ 表示仅统计主日志尾部 8MB 窗口，今日数为下界</div>' : ""}
+        ${ex ? `<details style="margin-top:12px"><summary class="t-mute" style="cursor:pointer;font-size:12px">历史体检日志（已停用，仅供参考）</summary><dl class="kv" style="margin-top:8px"><dt>日志</dt><dd class="mono">${esc(ex.file)}</dd><dt>最后一轮</dt><dd>${esc(ex.round || "—")}</dd><dt>汇总</dt><dd class="mono">${esc(ex.summary || "—")}</dd><dt>更新</dt><dd class="t-warn">${ago(ex.mtime)}（体检循环已停，数据过期）</dd></dl></details>` : ""}
+      </div>
     </div>
     <div class="grid g11" style="margin-top:16px">
       <div class="card"><h3>出错最多的房间<span class="r">近 24 小时</span></h3>${tops.length ? tops.map(r => `<div class="list-row"><div class="grow mono">${esc(r.room)}</div>${["room_fast", "room_deadline", "stream_fail"].map(k => r[k] ? `<span class="${CAT_L[k][1]}" style="font-size:12px">${CAT_L[k][0]} ${r[k]}</span>` : "").join("")}</div>`).join("") : '<div class="empty">没有</div>'}</div>

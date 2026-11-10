@@ -71,7 +71,7 @@ final class APIClient {
         return request
     }
 
-    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+    private func performData(_ request: URLRequest) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -95,7 +95,11 @@ final class APIClient {
             let text = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw APIError.server(text)
         }
+        return data
+    }
 
+    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let data = try await performData(request)
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
@@ -157,14 +161,25 @@ final class APIClient {
     /// 获取房间列表（可按 host 过滤）
     func fetchRooms(host: String? = nil) async throws -> [Room] {
         var query: [String: String] = [:]
-        if let host = host, host != "all" {
+        if let host = host, !host.isEmpty, host != "all" {
             query["host"] = host
         } else {
             query["host"] = "all"
         }
         let req = try makeRequest(path: "/api/rooms", query: query)
-        let rooms: [Room] = try await perform(req)
-        return rooms
+        let data = try await performData(req)
+
+        if let list = try? JSONDecoder().decode([Room].self, from: data) {
+            return list
+        }
+        if let wrapper = try? JSONDecoder().decode(RoomsResponse.self, from: data) {
+            return wrapper.rooms
+        }
+        do {
+            return try JSONDecoder().decode([Room].self, from: data)
+        } catch {
+            throw APIError.decoding(error.localizedDescription)
+        }
     }
 
     /// 获取多节点状态

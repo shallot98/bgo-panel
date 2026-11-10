@@ -666,6 +666,93 @@ def cookie_status():
     return res
 
 
+STDOUT_LOG = os.environ.get("BGO_STDOUT_LOG", "/var/log/bililive-go.log")
+# 通道日志只按尾部窗口扫，避免每 5 分钟重读 2GB 主日志
+CHANNEL_TAIL_BYTES = 8 * 1024 * 1024
+TS_RE = re.compile(r'time="(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"')
+CHANNEL_PATTERNS = (
+    ("http444", "Request failed with status code 444"),
+    ("circuit", "has been blocked due to"),
+    ("channel_fail", "API web failed"),
+    ("channel_fail", "API webHTML failed"),
+    ("channel_fail", "API mobile failed"),
+    ("channel_fail", "API userHTML failed"),
+)
+
+
+def proxy_mode():
+    """从 sidecar 的 node wrapper 判断出口模式（只读，不改动任何进程）。
+
+    11-05 起 wrapper 里 resin 代理行被注释并 unset 代理变量 => 裸直连；
+    旧版 wrapper 会 export http(s)_proxy=http://bgo.recorder... => 住宅代理。
+    """
+    w = os.path.join(BGO_ROOT, ".appdata/external_tools/linux/amd64/node/v20.10.0/bin/node")
+    try:
+        with open(w, errors="replace") as f:
+            txt = f.read()
+    except OSError as e:
+        return {"mode": "unknown", "detail": "wrapper 不可读: %s" % e}
+    # 只看「生效行」（非注释），把变量定义行也算进来：新 wrapper 里
+    # RELAY=http://bgo.recorder:...@127.0.0.1:2260，export http_proxy="$RELAY"
+    active = [ln.strip() for ln in txt.splitlines()
+              if ln.strip() and not ln.strip().startswith("#")]
+    proxyline = next((ln for ln in active
+                      if ("http_proxy=" in ln or "https_proxy=" in ln or "RELAY=" in ln)
+                      and "http://" in ln), None)
+    if proxyline and ("bgo.recorder" in proxyline or "23.82.96.72" in proxyline):
+        via = "本地转发器→Tailscale→resin" if "127.0.0.1:2260" in proxyline else "resin 网关直连"
+        return {"mode": "proxy", "detail": "住宅代理（32 分片，%s）" % via,
+                "wrapper_mtime": os.path.getmtime(w)}
+    if "proxy disabled" in txt or any("no_proxy=\"*\"" in ln or "NO_PROXY=\"*\"" in ln
+                                      for ln in active):
+        return {"mode": "direct", "detail": "裸直连（住宅代理已停用）",
+                "wrapper_mtime": os.path.getmtime(w)}
+    return {"mode": "unknown", "detail": "无法判定（wrapper 无代理特征）",
+            "wrapper_mtime": os.path.getmtime(w)}
+
+
+def refresh_channel_stats():
+    """扫 stdout 主日志尾部窗口，统计 sidecar 通道的 444 / 熔断 / 通道失败。
+
+    通道行无时间戳：用最近一条 time="..." 行的时刻给它们打时间。
+    只统计今日 / 近 5 分钟两个口径；尾部 8MB 约覆盖半天以上，窗口不足时
+    今日计数为下界，界面上以「≈」提示。
+    """
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    cutoff5 = (now - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    out = {"updated": time.time(), "today": {}, "last5m": {},
+           "window_bytes": CHANNEL_TAIL_BYTES, "approx": False}
+    try:
+        size = os.path.getsize(STDOUT_LOG)
+        start = max(0, size - CHANNEL_TAIL_BYTES)
+        with open(STDOUT_LOG, "rb") as f:
+            f.seek(start)
+            data = f.read()
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    if start > 0:
+        out["approx"] = True  # 尾部窗口可能未覆盖整天，今日计数为下界
+    text = data.decode("utf-8", "replace")
+    cur_ts = ""
+    for line in text.splitlines():
+        m = TS_RE.search(line)
+        if m:
+            cur_ts = m.group(1)
+            continue
+        if not cur_ts:
+            continue
+        for cat, needle in CHANNEL_PATTERNS:
+            if needle not in line:
+                continue
+            if cur_ts[:10] == today:
+                out["today"][cat] = out["today"].get(cat, 0) + 1
+                if cur_ts >= cutoff5:
+                    out["last5m"][cat] = out["last5m"].get(cat, 0) + 1
+    return out
+
+
 def exit_health():
     d = os.path.join(BGO_ROOT, "ops/fix-500")
     try:
@@ -682,8 +769,18 @@ def exit_health():
     return {"file": logs[-1], "mtime": os.path.getmtime(p), "summary": summary, "round": rnd}
 
 
+def _refresh_log_and_channels():
+    refresh_log_stats()
+    try:
+        ch = refresh_channel_stats()  # 读日志不持锁，避免阻塞面板请求
+        with CACHE_LOCK:
+            CACHE["channels"] = ch
+    except Exception:
+        log("channel stats failed", traceback.format_exc())
+
+
 def bg_refresh_loop():
-    tasks = [(refresh_log_stats, 300), (refresh_storage, 600), (refresh_sessions, 600)]
+    tasks = [(_refresh_log_and_channels, 300), (refresh_storage, 600), (refresh_sessions, 600)]
     last = {f: 0 for f, _ in tasks}
     while True:
         for fn, every in tasks:
@@ -710,6 +807,12 @@ def merged_rooms():
         x["managed"] = m
         x["failover"] = fo.get(x["id"])
         x["mode"] = m["mode"] if m and m["state"] in ("active", "waiting", "expiring") else "permanent"
+        # iOS 客户端 App (BgoPanel) 契约字段兼容
+        x["streamer_name"] = x.get("host_name") or ""
+        x["name"] = x.get("host_name") or ""
+        x["title"] = x.get("room_name") or ""
+        x["url"] = x.get("live_url") or ""
+        x["status"] = 1 if x.get("status") else 0
         out.append(x)
     return out
 
@@ -855,6 +958,11 @@ def all_rooms():
             continue
         for x in data:
             x["host"] = name
+            x["streamer_name"] = x.get("streamer_name") or x.get("host_name") or ""
+            x["name"] = x.get("name") or x.get("host_name") or ""
+            x["title"] = x.get("title") or x.get("room_name") or ""
+            x["url"] = x.get("url") or x.get("live_url") or ""
+            x["status"] = 1 if x.get("status") else 0
             rooms.append(x)
     return {"rooms": rooms, "errors": errors}
 
@@ -1676,7 +1784,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         host = (q.pop("host", [None])[0] if "host" in q else None) or (body or {}).get("host")
-        if AGENT_MODE or not host or host == LOCAL_NAME:
+        if AGENT_MODE or not host or host == LOCAL_NAME or host == "all":
             return False
         agent = agent_by_name(host)
         if not agent:
@@ -1760,7 +1868,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/rooms":
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 if not AGENT_MODE and q.get("host", [""])[0] == "all":
-                    return self.send_json(all_rooms())
+                    return self.send_json(all_rooms()["rooms"])
                 return self.send_json(merged_rooms())
             m = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/sessions", path)
             if m:
@@ -1774,7 +1882,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 with CACHE_LOCK:
                     ls = CACHE.get("logstats") or {}
+                    ch = CACHE.get("channels") or {}
                 return self.send_json({"logstats": ls, "cookie": cookie_status(), "exits": exit_health(),
+                                       "proxy_mode": proxy_mode(), "channels": ch,
                                        "procs": proc_status()})
             if path == "/api/storage":
                 with CACHE_LOCK:
@@ -1822,13 +1932,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/rooms":
                 return self.send_json(api_add_room(body))
-            m = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/(listen|mode)", path)
+            m = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/(listen|mode|start|stop)", path)
             if m and m.group(2) == "listen":
                 api_listen(m.group(1), bool(body.get("on")))
-                return self.send_json({"ok": True})
+                return self.send_json({"ok": True, "success": True, "message": "操作成功"})
+            if m and m.group(2) == "start":
+                api_listen(m.group(1), True)
+                return self.send_json({"ok": True, "success": True, "message": "已开启监听"})
+            if m and m.group(2) == "stop":
+                api_listen(m.group(1), False)
+                return self.send_json({"ok": True, "success": True, "message": "已关闭监听"})
             if m and m.group(2) == "mode":
                 api_set_mode(m.group(1), body)
-                return self.send_json({"ok": True})
+                return self.send_json({"ok": True, "success": True, "message": "模式已保存"})
             if path in ("/api/password", "/api/token/rotate") and not self.cookie_authed():
                 return self.send_json({"error": "需要登录后操作"}, 403)
             if path == "/api/password":
@@ -1866,6 +1982,30 @@ class Handler(BaseHTTPRequestHandler):
         except UpstreamError as e:
             oplog("user", "操作失败", None, None, f"{path}: {e}", ok=False)
             return self.send_json({"error": f"bgo 请求失败：{e}"}, 502)
+
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not self.authed():
+            return self.send_json({"error": "未登录"}, 401)
+        if self.proxy_to_agent("DELETE"):
+            return
+        try:
+            m = re.fullmatch(r"/api/rooms/([0-9a-f]{32})", path)
+            if m:
+                lid = m.group(1)
+                live = next((x for x in bgo_lives() if x["id"] == lid), None)
+                if not live:
+                    return self.send_json({"error": "房间不存在"}, 404)
+                if live.get("recording"):
+                    bgo(f"/lives/{lid}/stopRecord", "POST")
+                bgo(f"/lives/{lid}", "DELETE")
+                bgo("/config", "PUT")
+                managed_delete(lid)
+                oplog("user", "删除房间", lid, live.get("host_name"), live.get("live_url"))
+                return self.send_json({"ok": True, "success": True, "message": "已删除房间"})
+            return self.send_json({"error": "not found"}, 404)
+        except Exception as e:
+            return self.send_json({"error": str(e)}, 500)
 
     def login(self, body):
         ip = self.client_ip()
