@@ -403,14 +403,14 @@ def refresh_room_meta_once():
         except Exception as e:
             log(f"meta refresh living {url} error: {e}")
         time.sleep(1.5)
-    for url in missing_avatar[:2]:
+    for url in missing_avatar[:6]:
         try:
-            info = sidecar_live_info(url)
+            info = sidecar_channel_meta(url)
             if not info.get("avatar"):
-                sidecar_channel_meta(url)
+                sidecar_live_info(url)
         except Exception as e:
             log(f"meta refresh avatar {url} error: {e}")
-        time.sleep(1.5)
+        time.sleep(0.8)
 
 
 def room_meta_loop():
