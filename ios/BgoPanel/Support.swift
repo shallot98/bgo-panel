@@ -159,24 +159,44 @@ final class NoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
 final class ImageLoader {
     static let shared = ImageLoader()
     private let cache = NSCache<NSString, UIImage>()
+    private let session: URLSession
 
     private init() {
-        cache.countLimit = 200
+        cache.countLimit = 300
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        ]
+        session = URLSession(configuration: config)
+    }
+
+    static func normalizedURLString(_ raw: String?) -> String? {
+        guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else {
+            return nil
+        }
+        if s.hasPrefix("//") {
+            s = "https:" + s
+        } else if s.hasPrefix("http://") {
+            s = "https://" + s.dropFirst("http://".count)
+        }
+        return s
     }
 
     func load(from urlString: String?, completion: @escaping (UIImage?) -> Void) {
-        guard let urlString = urlString, let url = URL(string: urlString) else {
+        guard let norm = Self.normalizedURLString(urlString), let url = URL(string: norm) else {
             completion(nil)
             return
         }
 
-        let key = NSString(string: urlString)
+        let key = NSString(string: norm)
         if let cached = cache.object(forKey: key) {
             completion(cached)
             return
         }
 
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        session.dataTask(with: url) { [weak self] data, _, _ in
             guard let data = data, let img = UIImage(data: data) else {
                 DispatchQueue.main.async { completion(nil) }
                 return

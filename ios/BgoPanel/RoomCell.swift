@@ -15,6 +15,7 @@ final class RoomCell: UITableViewCell {
     private let modeBadgeLabel = UILabel()
     private let statusLabel = UILabel()
     private let toggleButton = UIButton(type: .system)
+    private var currentAvatarUrl: String?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -134,6 +135,14 @@ final class RoomCell: UITableViewCell {
         ])
     }
 
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        currentAvatarUrl = nil
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
+        avatarLabel.isHidden = false
+    }
+
     func configure(with room: Room, score: StreamerScore?) {
         nameLabel.text = room.streamerName
         titleLabel.text = (room.title?.isEmpty ?? true) ? "（暂无标题）" : room.title
@@ -177,13 +186,14 @@ final class RoomCell: UITableViewCell {
         }
 
         // 若有真实图片头像则异步加载并覆盖
-        if let avatarUrl = room.avatar, !avatarUrl.isEmpty {
+        let normUrl = ImageLoader.normalizedURLString(room.avatar)
+        currentAvatarUrl = normUrl
+        if let avatarUrl = normUrl {
             ImageLoader.shared.load(from: avatarUrl) { [weak self] img in
-                if let img = img {
-                    self?.avatarImageView.image = img
-                    self?.avatarImageView.isHidden = false
-                    self?.avatarLabel.isHidden = true
-                }
+                guard let self = self, self.currentAvatarUrl == avatarUrl, let img = img else { return }
+                self.avatarImageView.image = img
+                self.avatarImageView.isHidden = false
+                self.avatarLabel.isHidden = true
             }
         }
     }

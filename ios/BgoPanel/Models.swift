@@ -43,6 +43,9 @@ struct Room: Codable, Identifiable {
     let streamerName: String
     let avatar: String?
     let url: String?
+    let liveId: String? // 19位抖音当前直播场次 room_id
+    let webRid: String? // 网页房间号
+    let secUid: String? // 主播抖音 sec_uid
     let mode: String // "permanent" | "temp" | "session"
     let managed: ManagedInfo?
     let failover: FailoverInfo?
@@ -60,8 +63,12 @@ struct Room: Codable, Identifiable {
         case name
         case nickName = "nick_name"
         case avatar
+        case avatarUrl = "avatar_url"
         case url
         case liveUrl = "live_url"
+        case liveId = "live_id"
+        case webRid = "web_rid"
+        case secUid = "sec_uid"
         case mode
         case managed
         case failover
@@ -100,9 +107,39 @@ struct Room: Codable, Identifiable {
             streamerName = "未知主播"
         }
 
-        avatar = try? container.decodeIfPresent(String.self, forKey: .avatar)
-        url = (try? container.decodeIfPresent(String.self, forKey: .url))
+        if let av = try? container.decodeIfPresent(String.self, forKey: .avatar), !av.isEmpty {
+            avatar = av
+        } else if let avUrl = try? container.decodeIfPresent(String.self, forKey: .avatarUrl), !avUrl.isEmpty {
+            avatar = avUrl
+        } else {
+            avatar = nil
+        }
+
+        let resolvedUrl = (try? container.decodeIfPresent(String.self, forKey: .url))
             ?? (try? container.decodeIfPresent(String.self, forKey: .liveUrl))
+        url = resolvedUrl
+
+        if let lid = try? container.decodeIfPresent(String.self, forKey: .liveId), !lid.isEmpty {
+            liveId = lid
+        } else {
+            liveId = nil
+        }
+
+        if let wr = try? container.decodeIfPresent(String.self, forKey: .webRid), !wr.isEmpty {
+            webRid = wr
+        } else if let uStr = resolvedUrl, let parsed = URL(string: uStr) {
+            let last = parsed.pathComponents.last(where: { $0 != "/" })
+            webRid = (last?.isEmpty == false) ? last : nil
+        } else {
+            webRid = nil
+        }
+
+        if let su = try? container.decodeIfPresent(String.self, forKey: .secUid), !su.isEmpty {
+            secUid = su
+        } else {
+            secUid = nil
+        }
+
         mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "permanent"
         managed = try container.decodeIfPresent(ManagedInfo.self, forKey: .managed)
         failover = try container.decodeIfPresent(FailoverInfo.self, forKey: .failover)
@@ -119,6 +156,9 @@ struct Room: Codable, Identifiable {
         try container.encode(streamerName, forKey: .streamerName)
         try container.encodeIfPresent(avatar, forKey: .avatar)
         try container.encodeIfPresent(url, forKey: .url)
+        try container.encodeIfPresent(liveId, forKey: .liveId)
+        try container.encodeIfPresent(webRid, forKey: .webRid)
+        try container.encodeIfPresent(secUid, forKey: .secUid)
         try container.encode(mode, forKey: .mode)
         try container.encodeIfPresent(managed, forKey: .managed)
         try container.encodeIfPresent(failover, forKey: .failover)
@@ -221,12 +261,55 @@ struct StreamerScore: Codable {
     let scored: Int?
     let avgScore: Double?
     let maxScore: Double?
-    let distribution: [String: Int]?
+
+    enum CodingKeys: String, CodingKey {
+        case name, streamerId, total, scored, avgScore, maxScore
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try? c.decodeIfPresent(String.self, forKey: .name)
+        if let sStr = try? c.decodeIfPresent(String.self, forKey: .streamerId) {
+            streamerId = sStr
+        } else if let sInt = try? c.decodeIfPresent(Int.self, forKey: .streamerId) {
+            streamerId = String(sInt)
+        } else {
+            streamerId = nil
+        }
+        total = try? c.decodeIfPresent(Int.self, forKey: .total)
+        scored = try? c.decodeIfPresent(Int.self, forKey: .scored)
+        avgScore = try? c.decodeIfPresent(Double.self, forKey: .avgScore)
+        maxScore = try? c.decodeIfPresent(Double.self, forKey: .maxScore)
+    }
 }
 
 struct ScoresResponse: Codable {
     let enabled: Bool?
     let items: [String: StreamerScore]?
+}
+
+// MARK: - 实时直播间场次信息 (RoomLiveInfo)
+
+struct RoomLiveInfo: Codable {
+    let id: String?
+    let webRid: String?
+    let liveId: String?
+    let roomId: String?
+    let secUid: String?
+    let avatar: String?
+    let living: Bool?
+    let liveUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case webRid = "web_rid"
+        case liveId = "live_id"
+        case roomId = "room_id"
+        case secUid = "sec_uid"
+        case avatar
+        case living
+        case liveUrl = "live_url"
+    }
 }
 
 // MARK: - 通用操作响应

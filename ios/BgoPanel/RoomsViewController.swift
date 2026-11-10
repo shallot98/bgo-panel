@@ -117,7 +117,7 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
 
         Task {
             async let fetchRoomsTask = client.fetchRooms(host: "all")
-            async let fetchScoresTask = client.fetchScores()
+            async let fetchScoresTask: [String: StreamerScore] = (try? await client.fetchScores()) ?? [:]
 
             do {
                 let (roomsResult, scoresResult) = try await (fetchRoomsTask, fetchScoresTask)
@@ -320,6 +320,17 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
 
     // MARK: - UITableViewDataSource & UITableViewDelegate
 
+    private func lookupScore(for streamerName: String) -> StreamerScore? {
+        if let direct = scores[streamerName] {
+            return direct
+        }
+        let normalized = streamerName.precomposedStringWithCompatibilityMapping.unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0) || $0 == "_"
+        }
+        let key = String(String.UnicodeScalarView(normalized)).lowercased()
+        return scores[key]
+    }
+
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         displayedRooms.count
     }
@@ -329,7 +340,7 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
             return UITableViewCell()
         }
         let room = displayedRooms[indexPath.row]
-        let score = scores[room.streamerName]
+        let score = lookupScore(for: room.streamerName)
         cell.configure(with: room, score: score)
         cell.onToggleListening = { [weak self] in
             self?.toggleListening(for: room)
@@ -351,6 +362,9 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
             preferredStyle: .actionSheet
         )
 
+        sheet.addAction(UIAlertAction(title: "在抖音打开", style: .default) { [weak self] _ in
+            self?.openInDouyin(for: room)
+        })
         sheet.addAction(UIAlertAction(title: room.listening ? "停止监听" : "开始监听", style: .default) { [weak self] _ in
             self?.toggleListening(for: room)
         })
@@ -361,7 +375,7 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
             UIPasteboard.general.string = room.url ?? room.id
             Haptic.notification(.success)
         })
-        if let score = scores[room.streamerName], let sId = score.streamerId, !sId.isEmpty {
+        if let score = lookupScore(for: room.streamerName), let sId = score.streamerId, !sId.isEmpty {
             sheet.addAction(UIAlertAction(title: "在 dyzb 查看 AI 打分详情", style: .default) { [weak self] _ in
                 let web = WebViewController(path: "/scoring/streamer/\(sId)", title: "AI 评分: \(room.streamerName)")
                 self?.present(web, animated: true)
@@ -373,6 +387,78 @@ final class RoomsViewController: UIViewController, UITableViewDataSource, UITabl
         sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
 
         present(sheet, animated: true)
+    }
+
+    private func openInDouyin(for room: Room) {
+        Haptic.impact(.light)
+        // 若本地已有当前在播场次的 19 位纯数字 liveId，直接秒开抖音直播间
+        if let lid = room.liveId, !lid.isEmpty, lid.allSatisfy({ $0.isNumber }) {
+            launchDouyin(liveId: lid, secUid: room.secUid, webUrl: room.url, webRid: room.webRid)
+            return
+        }
+
+        // 否则实时向服务端查询当前在播场次 live_id
+        Task {
+            let info = try? await client.fetchRoomLiveInfo(id: room.id, host: room.host)
+            await MainActor.run {
+                let resolvedLiveId = [info?.liveId, info?.roomId, room.liveId]
+                    .compactMap { $0 }
+                    .first(where: { !$0.isEmpty && $0.allSatisfy({ $0.isNumber }) })
+                self.launchDouyin(
+                    liveId: resolvedLiveId,
+                    secUid: info?.secUid ?? room.secUid,
+                    webUrl: info?.liveUrl ?? room.url,
+                    webRid: info?.webRid ?? room.webRid
+                )
+            }
+        }
+    }
+
+    private func launchDouyin(liveId: String?, secUid: String?, webUrl: String?, webRid: String?) {
+        var candidates: [URL] = []
+
+        // 1. 优先使用 19 位直播场次 room_id 直接打开抖音 App 正在直播的直播间
+        if let lid = liveId, !lid.isEmpty {
+            if let u1 = URL(string: "snssdk1128://live?room_id=\(lid)&from=webview&refer=web") {
+                candidates.append(u1)
+            }
+            if let u2 = URL(string: "snssdk2329://live?room_id=\(lid)&from=webview&refer=web") {
+                candidates.append(u2)
+            }
+        }
+
+        // 2. 若未开播或无场次 ID，使用抖音内置 WebView 打开直播间页或跳转主播个人主页
+        let resolvedWebUrl = webUrl ?? (webRid != nil ? "https://live.douyin.com/\(webRid!)" : nil)
+        if let su = secUid, !su.isEmpty {
+            if let u = URL(string: "snssdk1128://user/profile/\(su)") {
+                candidates.append(u)
+            }
+            if let u = URL(string: "snssdk2329://user/profile/\(su)") {
+                candidates.append(u)
+            }
+        }
+        if let wStr = resolvedWebUrl,
+           let encoded = wStr.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let u = URL(string: "snssdk1128://webview?url=\(encoded)") {
+            candidates.append(u)
+        }
+
+        // 3. 最终兜底：系统浏览器打开网页版直播间
+        if let wStr = resolvedWebUrl, let u = URL(string: wStr) {
+            candidates.append(u)
+        }
+
+        openURLCandidates(candidates)
+    }
+
+    private func openURLCandidates(_ urls: [URL]) {
+        guard let first = urls.first else { return }
+        let rest = Array(urls.dropFirst())
+        UIApplication.shared.open(first, options: [:]) { [weak self] success in
+            if !success && !rest.isEmpty {
+                self?.openURLCandidates(rest)
+            }
+        }
     }
 
     // MARK: - 滑动操作 (Swipe Actions)

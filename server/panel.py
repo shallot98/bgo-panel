@@ -153,7 +153,66 @@ def init_db():
             expires_at REAL NOT NULL,
             ip TEXT
         );
+        CREATE TABLE IF NOT EXISTS room_meta (
+            room_key TEXT PRIMARY KEY,
+            avatar TEXT DEFAULT '',
+            live_id TEXT DEFAULT '',
+            sec_uid TEXT DEFAULT '',
+            updated_at REAL NOT NULL,
+            live_id_updated_at REAL DEFAULT 0
+        );
         """)
+
+
+_ROOM_META = {}
+_ROOM_META_LOCK = threading.Lock()
+
+
+def load_room_meta():
+    with _db_lock, db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM room_meta")]
+    with _ROOM_META_LOCK:
+        for r in rows:
+            _ROOM_META[r["room_key"]] = r
+
+
+def room_meta_get(rk):
+    if not rk:
+        return None
+    with _ROOM_META_LOCK:
+        r = _ROOM_META.get(rk)
+        return dict(r) if r else None
+
+
+def room_meta_put(rk, avatar=None, live_id=None, sec_uid=None, clear_live_id=False):
+    if not rk:
+        return None
+    now = time.time()
+    if avatar and avatar.startswith("http://"):
+        avatar = "https://" + avatar[len("http://"):]
+    with _ROOM_META_LOCK:
+        cur = dict(_ROOM_META.get(rk) or {
+            "room_key": rk, "avatar": "", "live_id": "", "sec_uid": "",
+            "updated_at": 0, "live_id_updated_at": 0
+        })
+        if avatar:
+            cur["avatar"] = avatar
+        if sec_uid:
+            cur["sec_uid"] = sec_uid
+        if clear_live_id:
+            cur["live_id"] = ""
+            cur["live_id_updated_at"] = now
+        elif live_id:
+            cur["live_id"] = str(live_id)
+            cur["live_id_updated_at"] = now
+        cur["updated_at"] = now
+        _ROOM_META[rk] = cur
+    with _db_lock, db() as c:
+        c.execute("""
+            INSERT OR REPLACE INTO room_meta(room_key, avatar, live_id, sec_uid, updated_at, live_id_updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+        """, (rk, cur["avatar"], cur["live_id"], cur["sec_uid"], cur["updated_at"], cur["live_id_updated_at"]))
+    return cur
 
 
 def migrate_db():
@@ -166,6 +225,10 @@ def migrate_db():
             c.execute("ALTER TABLE managed_rooms ADD COLUMN sessions_left INTEGER")
         c.execute("UPDATE managed_rooms SET sessions_total=1 WHERE mode='session' AND sessions_total IS NULL")
         c.execute("UPDATE managed_rooms SET sessions_left=1 WHERE mode='session' AND sessions_left IS NULL")
+        mcols = {r[1] for r in c.execute("PRAGMA table_info(room_meta)")}
+        if mcols and "live_id_updated_at" not in mcols:
+            c.execute("ALTER TABLE room_meta ADD COLUMN live_id_updated_at REAL DEFAULT 0")
+    load_room_meta()
 
 
 def oplog(actor, action, live_id=None, host=None, detail="", ok=True):
@@ -277,17 +340,87 @@ def sidecar_get(path, timeout=40):
 
 
 def sidecar_live_info(url):
-    """返回 {living, liveId, title, owner, api}。liveId 为抖音场次 ID（只有部分通道带）。"""
-    rid = urllib.parse.quote(room_key(url))
-    d = sidecar_get(f"/bgo/live-info?platform=douyin&roomId={rid}&dev=1")
-    dev = (d or {}).get("dev") or {}
+    """返回 {living, liveId, title, owner, api, avatar, uid}。liveId 为抖音场次 ID（19位数字）。"""
+    rk = room_key(url)
+    rid = urllib.parse.quote(rk)
+    d = sidecar_get(f"/bgo/live-info?platform=douyin&roomId={rid}&dev=1") or {}
+    dev = d.get("dev") or {}
+    living = bool(d.get("living") or dev.get("living"))
+    live_id = dev.get("liveId") or d.get("liveId") or None
+    avatar = dev.get("avatar") or d.get("avatar") or None
+    uid = dev.get("uid") or d.get("uid") or None
+    if rk and (avatar or live_id or uid or not living):
+        room_meta_put(rk, avatar=avatar, live_id=live_id if living else None,
+                      sec_uid=uid, clear_live_id=(not living))
     return {
-        "living": bool(d.get("living")),
-        "liveId": dev.get("liveId") or None,
-        "title": d.get("title"),
-        "owner": d.get("owner"),
+        "living": living,
+        "liveId": live_id,
+        "title": d.get("title") or dev.get("title"),
+        "owner": d.get("owner") or dev.get("owner"),
         "api": dev.get("api"),
+        "avatar": avatar,
+        "uid": uid,
     }
+
+
+def sidecar_channel_meta(url):
+    rk = room_key(url)
+    d = sidecar_get(f"/bgo/channel-info?url={urllib.parse.quote(url, safe='')}") or {}
+    if isinstance(d, dict):
+        avatar = d.get("avatar") or None
+        uid = d.get("uid") or None
+        if rk and (avatar or uid):
+            room_meta_put(rk, avatar=avatar, sec_uid=uid)
+        return {"id": d.get("id"), "avatar": avatar, "uid": uid, "owner": d.get("owner")}
+    return {}
+
+
+def refresh_room_meta_once():
+    try:
+        lives = bgo_lives() or []
+    except Exception:
+        return
+    now = time.time()
+    living_todo = []
+    missing_avatar = []
+    for x in lives:
+        url = x.get("live_url") or ""
+        if "live.douyin.com" not in url:
+            continue
+        rk = room_key(url)
+        if not rk:
+            continue
+        meta = room_meta_get(rk)
+        is_live = bool(x.get("status") or x.get("recording"))
+        if is_live:
+            if not meta or not meta.get("live_id") or not meta.get("avatar") or (now - (meta.get("live_id_updated_at") or 0) > 180):
+                living_todo.append(url)
+        elif not meta or not meta.get("avatar"):
+            missing_avatar.append(url)
+    for url in living_todo[:4]:
+        try:
+            sidecar_live_info(url)
+        except Exception as e:
+            log(f"meta refresh living {url} error: {e}")
+        time.sleep(1.5)
+    for url in missing_avatar[:2]:
+        try:
+            info = sidecar_live_info(url)
+            if not info.get("avatar"):
+                sidecar_channel_meta(url)
+        except Exception as e:
+            log(f"meta refresh avatar {url} error: {e}")
+        time.sleep(1.5)
+
+
+def room_meta_loop():
+    time.sleep(5)
+    while True:
+        try:
+            refresh_room_meta_once()
+        except Exception:
+            log("room_meta_loop error\n" + traceback.format_exc())
+        time.sleep(30)
 
 
 # ---------------------------------------------------------------- 房间模式规则
@@ -813,6 +946,22 @@ def merged_rooms():
         x["title"] = x.get("room_name") or ""
         x["url"] = x.get("live_url") or ""
         x["status"] = 1 if x.get("status") else 0
+        rk = room_key(x["url"])
+        meta = room_meta_get(rk) or {}
+        avatar = x.get("avatar") or meta.get("avatar") or ""
+        if avatar.startswith("http://"):
+            avatar = "https://" + avatar[len("http://"):]
+        is_live = bool(x["status"] or x.get("recording"))
+        if not is_live and meta.get("live_id"):
+            room_meta_put(rk, clear_live_id=True)
+            meta["live_id"] = ""
+        live_id = x.get("live_id") or (m.get("session_live_id") if (m and is_live) else "") or (meta.get("live_id") if is_live else "") or ""
+        sec_uid = x.get("sec_uid") or meta.get("sec_uid") or ""
+        x["avatar"] = avatar
+        x["avatar_url"] = avatar
+        x["web_rid"] = rk
+        x["live_id"] = str(live_id) if live_id else ""
+        x["sec_uid"] = sec_uid
         out.append(x)
     return out
 
@@ -963,6 +1112,19 @@ def all_rooms():
             x["title"] = x.get("title") or x.get("room_name") or ""
             x["url"] = x.get("url") or x.get("live_url") or ""
             x["status"] = 1 if x.get("status") else 0
+            rk = room_key(x["url"])
+            meta = room_meta_get(rk) or {}
+            avatar = x.get("avatar") or meta.get("avatar") or ""
+            if avatar.startswith("http://"):
+                avatar = "https://" + avatar[len("http://"):]
+            is_live = bool(x["status"] or x.get("recording"))
+            live_id = x.get("live_id") or (meta.get("live_id") if is_live else "") or ""
+            sec_uid = x.get("sec_uid") or meta.get("sec_uid") or ""
+            x["avatar"] = avatar
+            x["avatar_url"] = avatar
+            x["web_rid"] = x.get("web_rid") or rk
+            x["live_id"] = str(live_id) if live_id else ""
+            x["sec_uid"] = sec_uid
             rooms.append(x)
     return {"rooms": rooms, "errors": errors}
 
@@ -1062,6 +1224,8 @@ def resolve_douyin_short(u):
     rid = (d or {}).get("id") if isinstance(d, dict) else None
     if not rid:
         raise ValueError(f"短链接解析失败：{u}")
+    if isinstance(d, dict) and (d.get("avatar") or d.get("uid")):
+        room_meta_put(str(rid), avatar=d.get("avatar"), sec_uid=d.get("uid"))
     return f"https://live.douyin.com/{rid}"
 
 
@@ -1178,8 +1342,43 @@ def api_add_room(body):
         desc = "只录本场" if n == 1 else f"录 {n} 场"
     else:
         desc = {"permanent": "永久"}.get(mode, mode)
+    if "live.douyin.com" in url:
+        threading.Thread(target=lambda u=url: sidecar_live_info(u), daemon=True).start()
     return {"id": live["id"], "existed": existed, "host_name": host, "mode": mode,
             "message": f"{'已存在，' if existed else ''}{host} · {desc}"}
+
+
+def api_room_live_info(lid):
+    live = next((x for x in (bgo_lives() or []) if x["id"] == lid), None)
+    if not live:
+        raise ValueError("房间不存在")
+    url = live.get("live_url") or ""
+    rk = room_key(url)
+    m = managed_get(lid)
+    meta = room_meta_get(rk) or {}
+    info = {}
+    if "live.douyin.com" in url:
+        try:
+            info = sidecar_live_info(url)
+            meta = room_meta_get(rk) or meta
+        except UpstreamError as e:
+            log(f"live-info sidecar fallback for {rk}: {e}")
+    live_id = info.get("liveId") or (m.get("session_live_id") if m else None) or meta.get("live_id") or ""
+    avatar = info.get("avatar") or meta.get("avatar") or ""
+    if avatar.startswith("http://"):
+        avatar = "https://" + avatar[len("http://"):]
+    sec_uid = info.get("uid") or meta.get("sec_uid") or ""
+    living = bool(info.get("living") if "living" in info else (live.get("status") or live.get("recording")))
+    return {
+        "id": lid,
+        "web_rid": rk,
+        "live_id": str(live_id) if live_id else "",
+        "room_id": str(live_id) if live_id else "",
+        "sec_uid": sec_uid,
+        "avatar": avatar,
+        "living": living,
+        "live_url": url,
+    }
 
 
 def api_listen(live_id, on):
@@ -1876,6 +2075,12 @@ class Handler(BaseHTTPRequestHandler):
                 for s in d.get("sessions") or []:
                     fix_session(s)
                 return self.send_json(d)
+            m = re.fullmatch(r"/api/rooms/([0-9a-f]{32})/live-info", path)
+            if m:
+                try:
+                    return self.send_json(api_room_live_info(m.group(1)))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 404)
             if path == "/api/sessions":
                 with CACHE_LOCK:
                     return self.send_json(CACHE.get("sessions") or {"items": []})
@@ -2052,6 +2257,7 @@ def main():
         api_token()  # agent 首次启动生成密钥，供 hub 登记
     threading.Thread(target=rules_loop, daemon=True, name="rules").start()
     threading.Thread(target=bg_refresh_loop, daemon=True, name="refresh").start()
+    threading.Thread(target=room_meta_loop, daemon=True, name="room-meta").start()
     if not AGENT_MODE:
         threading.Thread(target=failover_loop, daemon=True, name="failover").start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)

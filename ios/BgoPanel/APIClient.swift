@@ -234,4 +234,10 @@ final class APIClient {
         let req = try makeRequest(path: "/api/rooms/\(id)", method: "DELETE", query: ["host": host])
         let _: APIResponse = try await perform(req)
     }
+
+    /// 实时查询房间直播场次信息（用于跳转抖音直播间）
+    func fetchRoomLiveInfo(id: String, host: String) async throws -> RoomLiveInfo {
+        let req = try makeRequest(path: "/api/rooms/\(id)/live-info", query: ["host": host])
+        return try await perform(req)
+    }
 }
